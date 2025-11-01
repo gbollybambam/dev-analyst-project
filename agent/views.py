@@ -1,24 +1,18 @@
 import json
 import os
 import uuid
-
-import requests
-import google.generativeai as genai
+from datetime import datetime, timezone
+import requests 
 
 from django.http import JsonResponse, HttpRequest
 from django.views import View
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
-from datetime import datetime, timezone
-
 from dotenv import load_dotenv
+
 load_dotenv()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    print("WARNING: GEMINI_API_KEY is not set. The AI will not work.")
 
 GEMINI_PROMPT_TEMPLATE = """
 You are a '10x' Senior Engineering Manager and a hiring expert. Your only job is to analyze a developer's potential based *only* on the following JSON list of their public repositories.
@@ -42,18 +36,18 @@ Analyze: {username}
 **Recommendation:** [A 1-sentence hiring recommendation.]
 """
 
-def get_github_data(username: str) -> dict:
-    api_url = f"https://api.github.com/users/{username}/repos?per_page=20"
 
+def get_github_data(username: str) -> dict:
+    """Fetches public repository data for a given GitHub username."""
+    api_url = f"https://api.github.com/users/{username}/repos?per_page=20"
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "X-GitHub-Api-Version": "2022-11-28"
     }
-
     try:
         response = requests.get(api_url, headers=headers)
-        response.raise_for_status()
-
+        response.raise_for_status() 
+        
         repos = response.json()
         simplified_repos = [
             {
@@ -65,34 +59,53 @@ def get_github_data(username: str) -> dict:
                 "is_fork": repo.get("fork")
             } for repo in repos
         ]
-
         return simplified_repos
-    
+
     except requests.exceptions.RequestException as e:
         print(f"Error fetching Github data: {e}")
-        return {"error": "Could not fetch Github data for this user. They may not exist.", "details": str(e)}
+        return {"error": f"Could not fetch GitHub data for '{username}'.", "details": str(e)}
 
 def get_gemini_analysis(username: str, github_data: dict) -> str:
     if not GEMINI_API_KEY:
-        return "Error: GEMINI_API_KEY is not set. The server is misconfigured. please contact the administrator."
-    
-    try:
-        model = genai.GenerativeModel('gemini-2.5-flash-preview-09-2025')
-        github_data_json_string = json.dumps(github_data, indent=2)
+        return "Error: GEMINI_API_KEY is not set. The server is misconfigured."
 
-        prompt = GEMINI_PROMPT_TEMPLATE.format(
-            github_data=github_data_json_string,
-            username=username
-        )
-        response = model.generate_content(prompt)
-        return response.text
+    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+
+    github_data_json_string = json.dumps(github_data, indent=2)
+    prompt_text = GEMINI_PROMPT_TEMPLATE.format(
+        github_data=github_data_json_string,
+        username=username
+    )
+
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt_text}]}
+        ]
+    }
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        response = requests.post(api_url, headers=headers, data=json.dumps(payload))
+        response.raise_for_status()
+
+        response_json = response.json()
+        analysis_text = response_json['candidates'][0]['content']['parts'][0]['text']
+        return analysis_text
+
+    except requests.exceptions.RequestException as e:
+        print(f"---! ERROR calling Gemini (HTTP) !---: {e}")
+        return f"Error: The AI analysis API failed. Details: {e.response.text}"
+    except (KeyError, IndexError) as e:
+        print(f"---! ERROR parsing Gemini response !---: {e}")
+        return f"Error: The AI analysis returned an unexpected format."
     except Exception as e:
-        print(f"Error generating Gemini analysis: {e}")
+        print(f"---! UNKNOWN ERROR in get_gemini_analysis !---: {e}")
         return f"Error: The AI analysis failed. Details: {str(e)}"
-    
+
 
 @method_decorator(csrf_exempt, name='dispatch')
 class DevAnalystView(View):
+
     def post(self, request: HttpRequest, *args, **kwargs):
         rpc_id = None
 
@@ -104,73 +117,57 @@ class DevAnalystView(View):
             parts = message.get('parts', [])
 
             if not parts or parts[0].get('kind') != 'text':
-                raise ValueError("Invalid request format: 'parts[0].text' not found. ")
-            username = parts[0]['text'].strip()
+                analysis_text = "**Error:** Invalid request. Please provide a GitHub username immediately after @DevAnalyst."
+                github_data = {} 
+            else:
+                user_text = parts[0]['text'].strip().lower()
 
-            github_data = get_github_data(username)
-
-            analysis_text = get_gemini_analysis(username, github_data)
+                if user_text in ["help", "hi", ""]:
+                    analysis_text = ""
+                    github_data = {} 
+                else:
+                    github_data = get_github_data(user_text)
+                    analysis_text = get_gemini_analysis(user_text, github_data) 
 
             task_id = message.get('taskId', str(uuid.uuid4()))
             context_id = params.get('contextId', task_id)
-
-            agent_message_part = {
-                "kind": "text",
-                "text": analysis_text
-            }
-
+            agent_message_part = { "kind": "text", "text": analysis_text }
             response_message = {
-                "kind": "message",
-                "role": "agent",
-                "parts": [agent_message_part],
-                "messageId": str(uuid.uuid4()),
-                "taskId": task_id
+                "kind": "message", "role": "agent", "parts": [agent_message_part],
+                "messageId": str(uuid.uuid4()), "taskId": task_id
             }
-
             result_payload = {
-                "id": task_id,
-                "contextId": context_id,
-                "status": {
-                    "state": "completed",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "message": response_message
-                },
-                "artifacts": [
-                    {
-                        "artifactId": str(uuid.uuid4()),
-                        "name": "github_raw_data",
-                        "parts": [
-                            {
-                                "kind": "data",
-                                "data": github_data
-                            }
-                        ]
-                    }
-                ],
-                "history": [],
-                "kind": "task"
+                "id": task_id, "contextId": context_id, 
+                "status": {"state": "completed", "timestamp": datetime.now(timezone.utc).isoformat(), "message": response_message},
+                "artifacts": [{"artifactId": str(uuid.uuid4()), "name": "github_raw_data", "parts": [{"kind": "data", "data": github_data}]}],
+                "history": [], "kind": "task"
             }
+            response = {"jsonrpc": "2.0", "id": rpc_id, "result": result_payload}
 
-            response = {
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "result": result_payload
-            }
+            return JsonResponse(response, status=200)
 
-            return JsonResponse(response)
         except Exception as e:
-            print(f"---!Error in DevAnalystView !---: {e}")
+            print(f"---! CRITICAL ERROR in DevAnalystView !---: {e}")
 
-            error_payload = {
-                "code": -32603,
-                "message": "Internal server error",
-                "data": {"details": str(e)}
+            error_text = f"I'm sorry, I ran into a critical server error. Please tell the admin: {str(e)}"
+
+            task_id = str(uuid.uuid4())
+            context_id = str(uuid.uuid4())
+            if 'message' in locals() and message:
+                 task_id = message.get('taskId', str(uuid.uuid4()))
+            if 'params' in locals() and params:
+                context_id = params.get('contextId', task_id)
+ 
+            agent_message_part = { "kind": "text", "text": error_text }
+            response_message = {
+                "kind": "message", "role": "agent", "parts": [agent_message_part],
+                "messageId": str(uuid.uuid4()), "taskId": task_id
             }
-
-            response = {
-                "jsonrpc": "2.0",
-                "id": rpc_id or str(uuid.uuid4()),
-                "error": error_payload
+            result_payload = {
+                "id": task_id, "contextId": context_id,
+                "status": {"state": "completed", "timestamp": datetime.now(timezone.utc).isoformat(), "message": response_message},
+                "artifacts": [], "history": [], "kind": "task"
             }
-
-            return JsonResponse(response, status=500)
+            response = {"jsonrpc": "2.0", "id": rpc_id or str(uuid.uuid4()), "result": result_payload}
+            
+            return JsonResponse(response, status=200)
