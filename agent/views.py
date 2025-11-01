@@ -69,7 +69,7 @@ def get_gemini_analysis(username: str, github_data: dict) -> str:
     if not GEMINI_API_KEY:
         return "Error: GEMINI_API_KEY is not set. The server is misconfigured."
 
-    api_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
 
     github_data_json_string = json.dumps(github_data, indent=2)
     prompt_text = GEMINI_PROMPT_TEMPLATE.format(
