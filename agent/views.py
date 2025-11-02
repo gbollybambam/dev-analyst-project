@@ -59,7 +59,7 @@ def gemini_call(prompt_text: str) -> str:
         "contents": [
             {"parts": [{"text": prompt_text}]}
         ],
-        "config": {
+        "generationConfig": {
             "temperature": 0.0
         }
     }
