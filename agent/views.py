@@ -38,8 +38,8 @@ Analyze: {username}
 
 
 def get_github_data(username: str) -> dict:
-    """Fetches public repository data for a given GitHub username."""
-    api_url = f"https://api.github.com/users/{username}/repos?per_page=10"
+    """Fetches public repository data for a given GitHub username (limited to 10 for speed)."""
+    api_url = f"https://api.github.com/users/{username}/repos?per_page=10" 
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "X-GitHub-Api-Version": "2022-11-28"
@@ -66,6 +66,7 @@ def get_github_data(username: str) -> dict:
         return {"error": f"Could not fetch GitHub data for '{username}'.", "details": str(e)}
 
 def get_gemini_analysis(username: str, github_data: dict) -> str:
+    """Uses the lightweight requests library to call the fixed Gemini API endpoint."""
     if not GEMINI_API_KEY:
         return "Error: GEMINI_API_KEY is not set. The server is misconfigured."
 
@@ -116,18 +117,24 @@ class DevAnalystView(View):
             message = params.get('message', {})
             parts = message.get('parts', [])
 
-            if not parts or parts[0].get('kind') != 'text':
+            user_text = ""
+            
+            for part in parts:
+                if part.get('kind') == 'text' and part.get('text'):
+
+                    user_text = part['text'].strip().lower()
+
+            if not user_text or user_text == "gbollybambam": 
                 analysis_text = "**Error:** Invalid request. Please provide a GitHub username immediately after @DevAnalyst."
                 github_data = {} 
+            
+            elif user_text in ["help", "hi", ""]:
+                analysis_text = ""
+                github_data = {} 
             else:
-                user_text = parts[0]['text'].strip().lower()
+                github_data = get_github_data(user_text)
+                analysis_text = get_gemini_analysis(user_text, github_data)
 
-                if user_text in ["help", "hi", ""]:
-                    analysis_text = ""
-                    github_data = {} 
-                else:
-                    github_data = get_github_data(user_text)
-                    analysis_text = get_gemini_analysis(user_text, github_data) 
 
             task_id = message.get('taskId', str(uuid.uuid4()))
             context_id = params.get('contextId', task_id)
@@ -157,7 +164,7 @@ class DevAnalystView(View):
                  task_id = message.get('taskId', str(uuid.uuid4()))
             if 'params' in locals() and params:
                 context_id = params.get('contextId', task_id)
- 
+            
             agent_message_part = { "kind": "text", "text": error_text }
             response_message = {
                 "kind": "message", "role": "agent", "parts": [agent_message_part],
