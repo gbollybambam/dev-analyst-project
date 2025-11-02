@@ -14,6 +14,17 @@ load_dotenv()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 
+
+EXTRACTION_PROMPT = """
+You are an expert natural language parser. Your sole task is to extract the intended GitHub username from the following user input, ignoring any surrounding text, commands, HTML tags, chat history, or agent mentions (like @devanalyst or @gbollybambam).
+
+**If a single, valid GitHub username is clearly identifiable, return ONLY that username.**
+**If no clear username is present, return the word 'NONE'.**
+
+Raw Input: {raw_input}
+Username: 
+"""
+
 GEMINI_PROMPT_TEMPLATE = """
 You are a '10x' Senior Engineering Manager and a hiring expert. Your only job is to analyze a developer's potential based *only* on the following JSON list of their public repositories.
 
@@ -36,6 +47,48 @@ Analyze: {username}
 **Recommendation:** [A 1-sentence hiring recommendation.]
 """
 
+
+def gemini_call(prompt_text: str) -> str:
+    """Helper function to execute any Gemini API call."""
+    if not GEMINI_API_KEY:
+        return "Error: GEMINI_API_KEY is not set."
+        
+    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    
+    payload = {
+        "contents": [
+            {"parts": [{"text": prompt_text}]}
+        ],
+        "config": {
+            "temperature": 0.0
+        }
+    }
+    headers = {"Content-Type": "application/json"}
+
+    try:
+        response = requests.post(api_url, headers=headers, data=json.dumps(payload))
+        response.raise_for_status()
+        response_json = response.json()
+        
+        text = response_json['candidates'][0]['content']['parts'][0]['text'].strip()
+        return text
+
+    except requests.exceptions.RequestException as e:
+        print(f"---! ERROR calling Gemini (HTTP) !---: {e}")
+        return f"Error: The Gemini API failed during extraction/analysis. Details: {e.response.text}"
+    except (KeyError, IndexError) as e:
+        print(f"---! ERROR parsing Gemini response !---: {e}")
+        return "Error: The Gemini API returned an unexpected format."
+    except Exception as e:
+        print(f"---! UNKNOWN ERROR in gemini_call !---: {e}")
+        return f"Error: An unknown Gemini error occurred: {str(e)}"
+
+def extract_username_from_input(full_input: str) -> str:
+    """Uses Gemini to extract the clean username from messy input."""
+    prompt = EXTRACTION_PROMPT.format(raw_input=full_input)
+    result = gemini_call(prompt)
+    
+    return result.strip().lower()
 
 def get_github_data(username: str) -> dict:
     """Fetches public repository data for a given GitHub username (limited to 10 for speed)."""
@@ -66,42 +119,16 @@ def get_github_data(username: str) -> dict:
         return {"error": f"Could not fetch GitHub data for '{username}'.", "details": str(e)}
 
 def get_gemini_analysis(username: str, github_data: dict) -> str:
-    """Uses the lightweight requests library to call the fixed Gemini API endpoint."""
-    if not GEMINI_API_KEY:
-        return "Error: GEMINI_API_KEY is not set. The server is misconfigured."
-
-    api_url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-
+    """Performs the final analysis based on GitHub data."""
     github_data_json_string = json.dumps(github_data, indent=2)
     prompt_text = GEMINI_PROMPT_TEMPLATE.format(
         github_data=github_data_json_string,
         username=username
     )
+    analysis_text = gemini_call(prompt_text)
+    
+    return analysis_text
 
-    payload = {
-        "contents": [
-            {"parts": [{"text": prompt_text}]}
-        ]
-    }
-    headers = {"Content-Type": "application/json"}
-
-    try:
-        response = requests.post(api_url, headers=headers, data=json.dumps(payload))
-        response.raise_for_status()
-
-        response_json = response.json()
-        analysis_text = response_json['candidates'][0]['content']['parts'][0]['text']
-        return analysis_text
-
-    except requests.exceptions.RequestException as e:
-        print(f"---! ERROR calling Gemini (HTTP) !---: {e}")
-        return f"Error: The AI analysis API failed. Details: {e.response.text}"
-    except (KeyError, IndexError) as e:
-        print(f"---! ERROR parsing Gemini response !---: {e}")
-        return f"Error: The AI analysis returned an unexpected format."
-    except Exception as e:
-        print(f"---! UNKNOWN ERROR in get_gemini_analysis !---: {e}")
-        return f"Error: The AI analysis failed. Details: {str(e)}"
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -117,30 +144,25 @@ class DevAnalystView(View):
             message = params.get('message', {})
             parts = message.get('parts', [])
 
-
-            user_text = ""
-
+            full_raw_input = ""
             for part in parts:
                 if part.get('kind') == 'text' and part.get('text'):
-                    user_text = part['text'].strip().lower() 
-
-            if user_text.startswith("gbollybambam "):
-                 user_text = user_text.replace("gbollybambam ", "").strip()
-            if user_text.startswith("@devanalyst "):
-                 user_text = user_text.replace("@devanalyst ", "").strip()
+                    full_raw_input = part['text'].strip()
             
-
+            clean_username = extract_username_from_input(full_raw_input)
             
-            if not user_text:
-                analysis_text = "**Error:** Invalid request. Please provide a GitHub username immediately after @DevAnalyst."
+            if clean_username.startswith("error:") or clean_username == "none" or not clean_username:
+                analysis_text = "**Error:** Invalid request. Please provide a single, clean GitHub username."
+                if clean_username.startswith("error:"):
+                     analysis_text += f"\n(Internal detail: {clean_username})"
                 github_data = {} 
             
-            elif user_text in ["help", "hi", ""]:
+            elif clean_username in ["help", "hi", ""]:
                 analysis_text = ""
                 github_data = {} 
             else:
-                github_data = get_github_data(user_text)
-                analysis_text = get_gemini_analysis(user_text, github_data)
+                github_data = get_github_data(clean_username)
+                analysis_text = get_gemini_analysis(clean_username, github_data)
 
 
             task_id = message.get('taskId', str(uuid.uuid4()))
