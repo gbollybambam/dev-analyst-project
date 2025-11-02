@@ -117,14 +117,21 @@ class DevAnalystView(View):
             message = params.get('message', {})
             parts = message.get('parts', [])
 
+
             user_text = ""
-            
+
             for part in parts:
                 if part.get('kind') == 'text' and part.get('text'):
+                    user_text = part['text'].strip().lower() 
 
-                    user_text = part['text'].strip().lower()
+            if user_text.startswith("gbollybambam "):
+                 user_text = user_text.replace("gbollybambam ", "").strip()
+            if user_text.startswith("@devanalyst "):
+                 user_text = user_text.replace("@devanalyst ", "").strip()
+            
 
-            if not user_text or user_text == "gbollybambam": 
+            
+            if not user_text:
                 analysis_text = "**Error:** Invalid request. Please provide a GitHub username immediately after @DevAnalyst."
                 github_data = {} 
             
