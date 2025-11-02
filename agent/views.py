@@ -39,7 +39,7 @@ Analyze: {username}
 
 def get_github_data(username: str) -> dict:
     """Fetches public repository data for a given GitHub username."""
-    api_url = f"https://api.github.com/users/{username}/repos?per_page=20"
+    api_url = f"https://api.github.com/users/{username}/repos?per_page=10"
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "X-GitHub-Api-Version": "2022-11-28"

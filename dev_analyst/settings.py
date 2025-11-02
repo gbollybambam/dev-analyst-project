@@ -17,7 +17,7 @@ SECRET_KEY = os.environ.get('DJANGO_SECRET_KEY')
 
 DEBUG = (os.environ.get('DJANGO_DEBUG', '0') == '1')
 
-ALLOWED_HOSTS = ['.pythonanywhere.com']
+ALLOWED_HOSTS = ['.pythonanywhere.com', '127.0.0.1', 'localhost']
 
 # Application definition
 
